@@ -294,7 +294,7 @@ func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], <-cha
 // Example:
 //
 //	topic := topic.New[bool]()
-//	receiver, _, _ := topic.Subscribe(0)
+//	receiver, _, _ := topic.Subscribe(0, false /* includeRecent */)
 //	receiver.Unsubscribe()
 func (r *Receiver[T]) Unsubscribe() {
 	if r.topic == nil {
