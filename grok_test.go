@@ -20,9 +20,7 @@ func TestTopicBasics(t *testing.T) {
 		}
 
 		// Send messages via Send and SendCh.
-		if !topic.Send("message1") {
-			t.Fatalf("Send failed")
-		}
+		topic.Send("message1")
 		sendCh := topic.SendCh()
 		sendCh <- "message2"
 
@@ -67,9 +65,7 @@ func TestTopicBasics(t *testing.T) {
 
 		// Send more messages than buffer size.
 		for i := 1; i <= 4; i++ {
-			if !topic.Send(i) {
-				t.Fatalf("Send failed")
-			}
+			topic.Send(i)
 		}
 
 		// Receive messages (should get only the most recent 2: 3 and 4).
@@ -104,9 +100,7 @@ func TestTopicBasics(t *testing.T) {
 
 		// Send more messages than buffer size.
 		for i := 1; i <= 4; i++ {
-			if !topic.Send(i) {
-				t.Fatalf("Send failed")
-			}
+			topic.Send(i)
 		}
 
 		// Receive messages (should get only the oldest 2: 1 and 2).
@@ -144,9 +138,7 @@ func TestTopicBasics(t *testing.T) {
 		}
 
 		// Test Send on closed topic.
-		if topic.Send("test") {
-			t.Error("Send on closed topic should return error")
-		}
+		topic.Send("test")
 
 		// Test SendCh on closed topic is nil.
 		if ch := topic.SendCh(); ch != nil {
@@ -209,9 +201,7 @@ func TestTopicBasics(t *testing.T) {
 
 		// Send more messages than buffer size.
 		for i := 1; i <= 4; i++ {
-			if !topic.Send(i) {
-				t.Fatalf("Send failed")
-			}
+			topic.Send(i)
 		}
 
 		receiver, ch, err := topic.Subscribe(0, true /* includeRecent */)
@@ -220,9 +210,7 @@ func TestTopicBasics(t *testing.T) {
 		}
 
 		// Send one more message.
-		if !topic.Send(5) {
-			t.Fatalf("Send failed")
-		}
+		topic.Send(5)
 
 		// Receive messages (should get only the most recent 2: 3 and 4).
 		msgs := []int{}

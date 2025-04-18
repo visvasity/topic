@@ -214,22 +214,18 @@ func (t *Topic[T]) goDispatch() {
 	}
 }
 
-// Send publishes a message directly to the Topic. The message is duplicated
-// and delivered to all subscribed receivers. If the Topic is closed, Send
-// returns false.
+// Send publishes a message to the Topic. The message is duplicated and
+// delivered to all subscribed receivers. If the Topic is closed, Send becomes
+// a no-op.
 //
 // Example:
 //
 //	topic := topic.New[int]()
-//	if closed := topic.Send(42); closed {
-//		/* handle error */
-//	}
-func (t *Topic[T]) Send(v T) bool {
+//	topic.Send(42)
+func (t *Topic[T]) Send(v T) {
 	select {
 	case <-t.closeCtx.Done():
-		return false
 	case t.sendCh <- v:
-		return true
 	}
 }
 
