@@ -92,12 +92,6 @@ func New[T any]() *Topic[T] {
 // Close shuts down the Topic, preventing further subscriptions or message sends.
 // After closing, Send is a no-op, Subscribe returns an error, and Recent may
 // return false. Close is idempotent.
-//
-// Example:
-//
-//	topic := topic.New[float64](context.Background())
-//	err := topic.Close()
-//	if err != nil { /* handle error */ }
 func (t *Topic[T]) Close() error {
 	defer t.wg.Wait()
 
@@ -125,11 +119,6 @@ func (t *Topic[T]) isClosed() bool {
 // Send publishes a message to the Topic. The message is duplicated and
 // delivered to all subscribed receivers. Returns os.ErrClosed if the Topic is
 // closed.
-//
-// Example:
-//
-//	topic := topic.New[int](context.Background())
-//	topic.Send(42)
 func (t *Topic[T]) Send(v T) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -152,20 +141,9 @@ func (t *Topic[T]) Send(v T) error {
 //
 //   - limit == 0: Unbounded queue, buffering all messages (memory-limited).
 //   - limit > 0: Buffers the most recent limit messages, discarding older ones.
-//   - limit < 0: Buffers the oldest |limit| messages, discarding newer ones.
+//   - limit < 0: Buffers the oldest limit messages, discarding newer ones.
 //
 // If the Topic is closed or its context is canceled, Subscribe returns an error.
-//
-// Example:
-//
-//	topic := topic.New[string](context.Background())
-//	receiver, err := topic.Subscribe(5, false) // Buffer up to 5 recent messages
-//	if err != nil { /* handle error */ }
-//	for {
-//	    msg, err := receiver.Receive()
-//	    if err != nil { break }
-//	    fmt.Println(msg)
-//	}
 func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -189,12 +167,6 @@ func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], error
 
 // Unsubscribe removes the receiver from the Topic, discarding pending messages.
 // Unsubscribe is idempotent. After unsubscribing, the receiver cannot be reused.
-//
-// Example:
-//
-//	topic := topic.New[bool](context.Background())
-//	receiver, _ := topic.Subscribe(0, false)
-//	receiver.Unsubscribe()
 func (r *Receiver[T]) Unsubscribe() {
 	r.topic.mu.Lock()
 	if i := slices.Index(r.topic.receivers, r); i >= 0 {
@@ -217,13 +189,6 @@ func (r *Receiver[T]) Unsubscribe() {
 // until a message is available or the topic/receiver is closed. If closed, it
 // returns [os.ErrClosed]. If the topic's context is canceled, it returns the context's
 // error.
-//
-// Example:
-//
-//	receiver, _ := topic.Subscribe(5, false)
-//	msg, err := receiver.Receive()
-//	if err != nil { /* handle error */ }
-//	fmt.Println(msg)
 func (r *Receiver[T]) Receive() (T, error) {
 	return r.doReceive(context.Background())
 }
