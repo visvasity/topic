@@ -3,14 +3,18 @@
 package topic
 
 import (
+	"context"
+	"log"
 	"math/rand"
 	"sync"
 	"testing"
 )
 
 func TestStress(t *testing.T) {
+	ctx := context.Background()
+
 	const numReceivers = 10
-	const numMessages = 10000
+	const numMessages = 100000
 
 	topic := New[int64]()
 	defer topic.Close()
@@ -20,24 +24,26 @@ func TestStress(t *testing.T) {
 
 	wg.Add(numReceivers)
 	for i := 0; i < numReceivers; i++ {
-		recvr, rch, err := topic.Subscribe(0, true /* includeRecent */)
+		receiver, err := topic.Subscribe(0, true /* includeRecent */)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		go func(id int) {
-			for v := range rch {
+			n := 0
+			for v := range receiver.All(ctx, &err) {
 				_ = v
+				n++
 			}
-			recvr.Unsubscribe()
+			receiver.Unsubscribe()
+			log.Printf("%d: received %d messages", id, n)
 			wg.Done()
 		}(i)
 	}
 
 	for i := 0; i < numMessages; i++ {
-		topic.SendCh() <- rand.Int63()
+		topic.Send(rand.Int63())
 	}
-
 	topic.Close()
 }
 
@@ -45,16 +51,18 @@ func Benchmark1Send1Receive(b *testing.B) {
 	topic := New[int64]()
 	defer topic.Close()
 
-	recvr, rch, err := topic.Subscribe(0, true /* includeRecent */)
+	receiver, err := topic.Subscribe(0, true /* includeRecent */)
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer recvr.Unsubscribe()
+	defer receiver.Unsubscribe()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		topic.Send(rand.Int63())
-		<-rch
+		if _, err := receiver.Receive(); err != nil {
+			b.Fatal(err)
+		}
 	}
 	b.StopTimer()
 }
@@ -64,22 +72,24 @@ func Benchmark1Send10Receives(b *testing.B) {
 	defer topic.Close()
 
 	nreceivers := 10
-	var rchs []<-chan int64
+	var receivers []*Receiver[int64]
 	for i := 0; i < nreceivers; i++ {
-		recvr, rch, err := topic.Subscribe(0, true /* includeRecent */)
+		r, err := topic.Subscribe(0, true /* includeRecent */)
 		if err != nil {
 			b.Fatal(err)
 		}
-		defer recvr.Unsubscribe()
+		defer r.Unsubscribe()
 
-		rchs = append(rchs, rch)
+		receivers = append(receivers, r)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		topic.Send(rand.Int63())
-		for _, rch := range rchs {
-			<-rch
+		for _, r := range receivers {
+			if _, err := r.Receive(); err != nil {
+				b.Fatal(err)
+			}
 		}
 	}
 	b.StopTimer()

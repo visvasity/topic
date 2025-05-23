@@ -12,9 +12,14 @@ func TestRecent(t *testing.T) {
 		t.Fatalf("want false, got true")
 	}
 
+	ch, err := SendCh(topic)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	numMsgs := 5
 	for i := 1; i <= numMsgs; i++ {
-		topic.SendCh() <- i
+		ch <- i
 	}
 
 	if v, ok := Recent(topic); !ok {

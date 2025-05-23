@@ -1,4 +1,4 @@
-// Copyright (c) 2023 BVK Chaitanya
+// Copyright (c) 2025 Visvasity LLC
 
 // Package topic implements a generic, buffering publish-subscribe messaging
 // system with dynamic fanout.
@@ -13,8 +13,9 @@ package topic
 
 import (
 	"context"
+	"errors"
+	"iter"
 	"os"
-	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -25,294 +26,245 @@ import (
 // the buffering behavior is configured per receiver via Subscribe. Topics are
 // created with New and support generic message types.
 type Topic[T any] struct {
-	// closeCtx and closeCause are used to cancel background tasks when topic is
-	// closed.
-	closeCtx   context.Context
-	closeCause context.CancelCauseFunc
+	// lifeCtx and lifeCancel manage topic lifecycle and cancellation.
+	lifeCtx    context.Context
+	lifeCancel context.CancelCauseFunc
 
-	// wg is used to block for internal goroutine cleanup.
+	// wg tracks internal goroutines.
 	wg sync.WaitGroup
 
-	// sendCh receives incoming messages for the topic.
-	sendCh chan T
-
-	// subscribeCh receives a message when the topic has a new receiver.
-	subscribeCh chan *Receiver[T]
-
-	// unsubscribeCh receives a message when a topic receiver is unsubscribed.
-	unsubscribeCh chan *Receiver[T]
+	// mu synchronizes access to receivers and closed state.
+	mu sync.Mutex
 
 	// receivers is the list of all receivers for the topic.
 	receivers []*Receiver[T]
 
 	// recentValue holds the latest value sent to the topic.
-	recentValue atomic.Value
+	recentValue T
+
+	// numValues holds total number of values sent over the topic.
+	numValues int64
+
+	// sendCh is an optional channel backed by a goroutine to receiver values
+	// over a channel instead.
+	sendCh chan T
 }
 
 // Receiver represents a subscriber to a Topic. It provides methods to manage
-// subscription lifecycle, such as unsubscribing from the Topic.
+// subscription lifecycle, such as unsubscribing, and to receive messages.
 type Receiver[T any] struct {
 	topic *Topic[T]
 
-	// ok channel signals completion of a subscribe/unsubscribe operation.
-	ok chan struct{}
+	// mu synchronizes access to queue and closed state.
+	mu sync.Mutex
 
-	// limit indicates maximum number of messages to buffer in the queue. A zero
-	// limit means queue is unbounded; with a +ve limit N, queue holds the newest
-	// N values and with a -ve limit N, queue holds the oldest N values.
+	// cond signals receivers when new messages are available or state changes.
+	cond sync.Cond
+
+	// queue holds zero or more incoming messages not yet received.
+	queue []T
+
+	// limit indicates maximum number of messages to buffer in the queue.
+	// 0: unbounded; +N: newest N values; -N: oldest |N| values.
 	limit int
 
-	// includeRecent flag when true begins the receiver with the most recent
-	// message before the receiver is created.
-	includeRecent bool
-
-	// relayCh is the channel where receiver waits to receive messages.
-	relayCh chan T
-
-	// queue holds zero or more incoming messages not yet received by this
-	// receiver.
-	queue []reflect.Value
+	// closed indicates whether the receiver is unsubscribed or topic is closed.
+	closed atomic.Bool
 }
 
 // New creates a new Topic for messages of type T. The returned Topic is ready
-// to accept messages via Send/SendCh and subscribers via Subscribe.
+// to accept messages via Send and subscribers via Subscribe. The provided
+// context controls the topic's lifecycle; when it cancels, the topic closes.
 //
 // Example:
 //
 //	topic := topic.New[string]()
-//	ch := topic.SendCh()
-//	ch <- "Hello, world!"
+//	topic.Send("Hello, world!")
 func New[T any]() *Topic[T] {
-	ctx, cause := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	t := &Topic[T]{
-		closeCtx:      ctx,
-		closeCause:    cause,
-		sendCh:        make(chan T),
-		subscribeCh:   make(chan *Receiver[T]),
-		unsubscribeCh: make(chan *Receiver[T]),
+		lifeCtx:    ctx,
+		lifeCancel: cancel,
 	}
-	t.wg.Add(1)
-	go t.goDispatch()
 	return t
 }
 
-// Close shuts down the Topic, closing all subscriber channels and preventing
-// further subscriptions or message sends. After closing, SendCh will panic,
-// Subscribe will return an error, and Recent may return false. Close is
-// idempotent; multiple calls have no additional effect.
+// Close shuts down the Topic, preventing further subscriptions or message sends.
+// After closing, Send is a no-op, Subscribe returns an error, and Recent may
+// return false. Close is idempotent.
 //
 // Example:
 //
-//	topic := topic.New[float64]()
+//	topic := topic.New[float64](context.Background())
 //	err := topic.Close()
 //	if err != nil { /* handle error */ }
 func (t *Topic[T]) Close() error {
-	t.closeCause(os.ErrClosed)
-	t.wg.Wait()
+	defer t.wg.Wait()
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.isClosed() {
+		return nil
+	}
+
+	t.lifeCancel(os.ErrClosed)
+	for _, r := range t.receivers {
+		r.close()
+	}
+
+	t.receivers = nil
 	return nil
 }
 
-func (t *Topic[T]) goDispatch() {
-	defer t.wg.Done()
-
-	nreceivers := len(t.receivers)
-	pending := make([]reflect.SelectCase, 0, nreceivers+4)
-
-	for {
-
-		if n := len(t.receivers); n != nreceivers {
-			nreceivers = n
-			pending = make([]reflect.SelectCase, 0, nreceivers+4)
-		} else {
-			pending = pending[:0]
-		}
-
-		closeCase := reflect.SelectCase{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(t.closeCtx.Done()),
-		}
-		pending = append(pending, closeCase)
-
-		sendCase := reflect.SelectCase{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(t.sendCh),
-		}
-		pending = append(pending, sendCase)
-
-		subscribeCase := reflect.SelectCase{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(t.subscribeCh),
-		}
-		pending = append(pending, subscribeCase)
-
-		unsubscribeCase := reflect.SelectCase{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(t.unsubscribeCh),
-		}
-		pending = append(pending, unsubscribeCase)
-
-		// Each receiver has one channel starting at offset 4.
-		for _, r := range t.receivers {
-			relayCase := reflect.SelectCase{
-				Dir: reflect.SelectSend,
-			}
-			if len(r.queue) > 0 {
-				relayCase.Chan = reflect.ValueOf(r.relayCh)
-				relayCase.Send = r.queue[0]
-			}
-			pending = append(pending, relayCase)
-		}
-
-		chosen, recv, recvOK := reflect.Select(pending)
-		switch chosen {
-		case 0: // <-t.closeCtx
-			{
-				for _, r := range t.receivers {
-					close(r.relayCh)
-				}
-				t.receivers = nil
-				return
-			}
-
-		case 1: // <-t.sendCh
-			if recvOK {
-				v := recv.Interface().(T)
-				for _, r := range t.receivers {
-					r.add(recv)
-				}
-				t.recentValue.Store(v)
-			}
-
-		case 2: // <-t.subscribeCh
-			if recvOK {
-				r := recv.Interface().(*Receiver[T])
-				chsize := 0
-				r.topic = t
-				r.relayCh = make(chan T, chsize)
-				t.receivers = append(t.receivers, r)
-				if v, ok := Recent(t); ok && r.includeRecent {
-					r.add(reflect.ValueOf(v))
-				}
-				r.ok <- struct{}{}
-			}
-
-		case 3: // <-t.unsubscribeCh
-			if recvOK {
-				r := recv.Interface().(*Receiver[T])
-				if i := slices.Index(t.receivers, r); i >= 0 {
-					t.receivers = slices.Delete(t.receivers, i, i+1)
-					r.queue = nil
-					close(r.relayCh)
-					r.ok <- struct{}{}
-				}
-			}
-
-		default:
-			r := t.receivers[chosen-4]
-			r.remove()
-		}
-	}
+// isClosed returns true if topic is closed.
+func (t *Topic[T]) isClosed() bool {
+	return t.lifeCtx.Err() != nil
 }
 
 // Send publishes a message to the Topic. The message is duplicated and
-// delivered to all subscribed receivers. If the Topic is closed, Send becomes
-// a no-op.
+// delivered to all subscribed receivers. Returns os.ErrClosed if the Topic is
+// closed.
 //
 // Example:
 //
-//	topic := topic.New[int]()
+//	topic := topic.New[int](context.Background())
 //	topic.Send(42)
-func (t *Topic[T]) Send(v T) {
-	select {
-	case <-t.closeCtx.Done():
-	case t.sendCh <- v:
+func (t *Topic[T]) Send(v T) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.isClosed() {
+		return context.Cause(t.lifeCtx)
 	}
+
+	for _, r := range t.receivers {
+		r.add(v)
+	}
+
+	t.numValues++
+	t.recentValue = v
+	return nil
 }
 
-// SendCh returns a send-only channel for publishing messages to the Topic.
-// Messages sent to this channel are duplicated and delivered to all subscribed
-// receivers. If the Topic is closed, sending to the channel will panic.
-//
-// Example:
-//
-//	topic := topic.New[int]()
-//	ch := topic.SendCh()
-//	ch <- 42
-func (t *Topic[T]) SendCh() chan<- T {
-	select {
-	case <-t.closeCtx.Done():
-		return nil
-	default:
-		return t.sendCh
-	}
-}
-
-// Subscribe adds a new receiver to the Topic, returning a Receiver and a
-// receive-only channel for consuming messages. The limit parameter controls
-// the receiver's queue behavior:
+// Subscribe adds a new receiver to the Topic, returning a Receiver for consuming
+// messages via Receive. The limit parameter controls the receiver's queue behavior:
 //
 //   - limit == 0: Unbounded queue, buffering all messages (memory-limited).
-//   - limit > 0: Buffers the most recent limit messages, discarding older ones if full.
-//   - limit < 0: Buffers the oldest |limit| messages, discarding newer ones if full.
+//   - limit > 0: Buffers the most recent limit messages, discarding older ones.
+//   - limit < 0: Buffers the oldest |limit| messages, discarding newer ones.
 //
-// If the Topic is closed, Subscribe returns an error. The returned channel is
-// closed when the receiver unsubscribes or the Topic is closed.
+// If the Topic is closed or its context is canceled, Subscribe returns an error.
 //
 // Example:
 //
-//	topic := topic.New[string]()
-//	receiver, ch, err := topic.Subscribe(5, false /* includeRecent */) // Buffer up to 5 recent messages
+//	topic := topic.New[string](context.Background())
+//	receiver, err := topic.Subscribe(5, false) // Buffer up to 5 recent messages
 //	if err != nil { /* handle error */ }
-//	for msg := range ch {
+//	for {
+//	    msg, err := receiver.Receive()
+//	    if err != nil { break }
 //	    fmt.Println(msg)
 //	}
-func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], <-chan T, error) {
-	r := &Receiver[T]{
-		ok:            make(chan struct{}),
-		limit:         limit,
-		includeRecent: includeRecent,
+func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.isClosed() {
+		return nil, context.Cause(t.lifeCtx)
 	}
 
-	select {
-	case <-t.closeCtx.Done():
-		return nil, nil, context.Cause(t.closeCtx)
-	case t.subscribeCh <- r:
-		<-r.ok
-		return r, r.relayCh, nil
+	r := &Receiver[T]{
+		topic: t,
+		limit: limit,
 	}
+	r.cond.L = &r.mu
+
+	t.receivers = append(t.receivers, r)
+	if includeRecent && t.numValues > 0 {
+		r.add(t.recentValue)
+	}
+	return r, nil
 }
 
-// Unsubscribe removes the receiver from the Topic, closing its associated
-// receive-only channel. Pending messages in the receiver's queue are
-// discarded.  Unsubscribe is idempotent; multiple calls have no effect. After
-// unsubscribing, the receiver cannot be reused.
+// Unsubscribe removes the receiver from the Topic, discarding pending messages.
+// Unsubscribe is idempotent. After unsubscribing, the receiver cannot be reused.
 //
 // Example:
 //
-//	topic := topic.New[bool]()
-//	receiver, _, _ := topic.Subscribe(0, false /* includeRecent */)
+//	topic := topic.New[bool](context.Background())
+//	receiver, _ := topic.Subscribe(0, false)
 //	receiver.Unsubscribe()
 func (r *Receiver[T]) Unsubscribe() {
-	if r.topic == nil {
+	r.topic.mu.Lock()
+	if i := slices.Index(r.topic.receivers, r); i >= 0 {
+		r.topic.receivers = slices.Delete(r.topic.receivers, i, i+1)
+	}
+	r.topic.mu.Unlock()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.closed.CompareAndSwap(false, true) {
 		return
 	}
 
-	select {
-	case <-r.topic.closeCtx.Done():
-		return
-
-	case r.topic.unsubscribeCh <- r:
-		<-r.ok
-		r.topic = nil
-	}
+	r.queue = nil
+	r.cond.Broadcast()
 }
 
-func (r *Receiver[T]) add(v reflect.Value) {
-	if len(r.queue) == 0 {
-		if reflect.ValueOf(r.relayCh).TrySend(v) {
-			return
+// Receive returns the next available message from the receiver's queue, blocking
+// until a message is available or the topic/receiver is closed. If closed, it
+// returns [os.ErrClosed]. If the topic's context is canceled, it returns the context's
+// error.
+//
+// Example:
+//
+//	receiver, _ := topic.Subscribe(5, false)
+//	msg, err := receiver.Receive()
+//	if err != nil { /* handle error */ }
+//	fmt.Println(msg)
+func (r *Receiver[T]) Receive() (T, error) {
+	return r.doReceive(context.Background())
+}
+
+func (r *Receiver[T]) doReceive(ctx context.Context) (T, error) {
+	var zero T
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for ctx.Err() == nil {
+		if r.closed.Load() {
+			return zero, os.ErrClosed
 		}
+
+		if len(r.queue) > 0 {
+			v := r.queue[0]
+			r.queue = slices.Delete(r.queue, 0, 1)
+			return v, nil
+		}
+
+		if r.topic.isClosed() {
+			return zero, context.Cause(r.topic.lifeCtx)
+		}
+
+		r.cond.Wait()
 	}
+
+	return zero, context.Cause(ctx)
+}
+
+// add appends a message to the receiver's queue, respecting the limit.
+func (r *Receiver[T]) add(v T) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.closed.Load() {
+		return
+	}
+
+	defer r.cond.Broadcast()
 
 	if r.limit == 0 {
 		r.queue = append(r.queue, v)
@@ -324,9 +276,8 @@ func (r *Receiver[T]) add(v reflect.Value) {
 			r.queue = append(r.queue, v)
 			return
 		}
-		// limit must be enforced; drop from the front of the queue.
-		_ = slices.Delete(r.queue, 0, 1)
-		r.queue[r.limit-1] = v
+		r.queue = slices.Delete(r.queue, 0, 1)
+		r.queue = append(r.queue, v)
 	}
 
 	if r.limit < 0 {
@@ -334,12 +285,44 @@ func (r *Receiver[T]) add(v reflect.Value) {
 			r.queue = append(r.queue, v)
 			return
 		}
-		// queue already holds oldest values, so new value is ignored.
 	}
 }
 
-func (r *Receiver[T]) remove() reflect.Value {
-	v := r.queue[0]
-	r.queue = slices.Delete(r.queue, 0, 1)
-	return v
+// close marks the receiver as closed and clears its queue.
+func (r *Receiver[T]) close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if !r.closed.CompareAndSwap(false, true) {
+		return
+	}
+
+	r.queue = nil
+	r.cond.Broadcast()
+}
+
+// All returns an iterator to process all incoming values over the
+// topic. Iterator stops with nil if the topic or the receiver is closed.
+func (r *Receiver[T]) All(ctx context.Context, errp *error) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		stopf := context.AfterFunc(ctx, func() {
+			r.mu.Lock()
+			r.cond.Broadcast()
+			r.mu.Unlock()
+		})
+		defer stopf()
+
+		for {
+			v, err := r.doReceive(ctx)
+			if err != nil {
+				if !errors.Is(err, os.ErrClosed) {
+					*errp = err
+				}
+				return
+			}
+			if !yield(v) {
+				return
+			}
+		}
+	}
 }
