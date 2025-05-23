@@ -120,6 +120,22 @@ func (t *Topic[T]) isClosed() bool {
 	return t.lifeCtx.Err() != nil
 }
 
+// Last returns the most recent message sent over the Topic.  Returns false if
+// no messages are ever sent over the topic.
+func (t *Topic[T]) Last() (v T, ok bool) {
+	if t.isClosed() {
+		return v, false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.numValues == 0 {
+		return v, false
+	}
+	return t.recentValue, true
+}
+
 // Send publishes a message to the Topic. The message is duplicated and
 // delivered to all subscribed receivers. Returns os.ErrClosed if the Topic is
 // closed.
@@ -148,7 +164,7 @@ func (t *Topic[T]) Send(v T) error {
 //   - limit < 0: Buffers the oldest limit messages, discarding newer ones.
 //
 // If the Topic is closed or its context is canceled, Subscribe returns an error.
-func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], error) {
+func (t *Topic[T]) Subscribe(limit int, includeLast bool) (*Receiver[T], error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -166,7 +182,7 @@ func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], error
 	r.cond.L = &r.mu
 
 	t.receivers = append(t.receivers, r)
-	if includeRecent && t.numValues > 0 {
+	if includeLast && t.numValues > 0 {
 		r.add(t.recentValue)
 	}
 	return r, nil
@@ -204,10 +220,10 @@ func (r *Receiver[T]) Unsubscribe() {
 // returns [os.ErrClosed]. If the topic's context is canceled, it returns the context's
 // error.
 func (r *Receiver[T]) Receive() (T, error) {
-	return r.doReceive(context.Background(), true /* failOnReceiveCh */)
+	return r.doReceive(context.Background())
 }
 
-func (r *Receiver[T]) doReceive(ctx context.Context, failOnReceiveCh bool) (T, error) {
+func (r *Receiver[T]) doReceive(ctx context.Context) (T, error) {
 	var zero T
 
 	r.mu.Lock()
@@ -220,13 +236,6 @@ func (r *Receiver[T]) doReceive(ctx context.Context, failOnReceiveCh bool) (T, e
 
 		if r.topic.isClosed() {
 			return zero, context.Cause(r.topic.lifeCtx)
-		}
-
-		// Returns invalid when receiveCh is active.
-		if failOnReceiveCh {
-			if r.receiveCh != nil {
-				return zero, os.ErrInvalid
-			}
 		}
 
 		if len(r.queue) > 0 {
@@ -301,7 +310,7 @@ func (r *Receiver[T]) All(ctx context.Context, errp *error) iter.Seq[T] {
 		defer stopf()
 
 		for {
-			v, err := r.doReceive(ctx, true /* failOnReceiveCh */)
+			v, err := r.doReceive(ctx)
 			if err != nil {
 				if !errors.Is(err, os.ErrClosed) {
 					*errp = err

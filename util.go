@@ -4,44 +4,8 @@ package topic
 
 import (
 	"context"
+	"os"
 )
-
-// Recent returns the most recent message sent to the Topic and a boolean
-// indicating whether a message exists. If no messages have been sent or the
-// Topic is closed, it returns false.
-func Recent[T any](t *Topic[T]) (v T, ok bool) {
-	if t.isClosed() {
-		return v, false
-	}
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.numValues == 0 {
-		return v, false
-	}
-	return t.recentValue, true
-}
-
-// Receive returns the next available message from the receiver's queue,
-// blocking until a message is available, the topic/receiver is closed, or the
-// provided context is canceled. It returns [os.ErrClosed] if the
-// topic/receiver is closed, or the context's error if the provided context is
-// canceled.
-//
-// NOTE: This function is more expensive than the non-context aware Receive
-// method because [context.AfterFunc] setup is required to wake up the internal
-// condition variable when the input context is canceled/expired.
-func Receive[T any](ctx context.Context, r *Receiver[T]) (T, error) {
-	stopf := context.AfterFunc(ctx, func() {
-		r.mu.Lock()
-		r.cond.Broadcast()
-		r.mu.Unlock()
-	})
-	defer stopf()
-
-	return r.doReceive(ctx, true /* failOnReceiveCh */)
-}
 
 // SendCh returns a select-friendly channel to send messages over to a
 // topic. This is an alternative to the Send method, where a channel is more
@@ -79,4 +43,50 @@ func SendCh[T any](t *Topic[T]) (chan<- T, error) {
 	}
 
 	return t.sendCh, nil
+}
+
+// ReceiveCh returns a select-friendly channel to receive messages from a
+// topic's receiver. Inter-mixing Receive/All methods with receiver-channels
+// will result in out-of-order delivery of values, but values are delivered
+// only once. Also, using receive channels is more expensive than direct
+// receive methods.
+//
+// NOTE: A background helper goroutine is used to retrieve messages from the
+// topic and publish them to the topic. At max one background goroutine is
+// created on demand and it is private to the input receiver.
+//
+// Returned channel will be closed if the topic is closed or receiver is
+// unsubscribed.
+func ReceiveCh[T any](r *Receiver[T]) (<-chan T, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.isClosed() || r.topic.isClosed() {
+		return nil, os.ErrClosed
+	}
+
+	if r.receiveCh == nil {
+		r.receiveCh = make(chan T)
+
+		r.topic.wg.Add(1)
+		go func() {
+			defer r.topic.wg.Done()
+			defer close(r.receiveCh)
+
+			for !r.isClosed() {
+				v, err := r.doReceive(r.lifeCtx)
+				if err != nil {
+					return
+				}
+
+				select {
+				case <-r.lifeCtx.Done():
+					return
+				case r.receiveCh <- v:
+				}
+			}
+		}()
+	}
+
+	return r.receiveCh, nil
 }
