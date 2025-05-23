@@ -2,7 +2,9 @@
 
 package topic
 
-import "context"
+import (
+	"context"
+)
 
 // Recent returns the most recent message sent to the Topic and a boolean
 // indicating whether a message exists. If no messages have been sent or the
@@ -38,7 +40,7 @@ func Receive[T any](ctx context.Context, r *Receiver[T]) (T, error) {
 	})
 	defer stopf()
 
-	return r.doReceive(ctx)
+	return r.doReceive(ctx, true /* failOnReceiveCh */)
 }
 
 // SendCh returns a select-friendly channel to send messages over to a

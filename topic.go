@@ -70,6 +70,9 @@ type Receiver[T any] struct {
 
 	// closed indicates whether the receiver is unsubscribed or topic is closed.
 	closed atomic.Bool
+
+	// receiveCh when non-nil indicates retrieves values ONLY over this channel.
+	receiveCh chan T
 }
 
 // New creates a new Topic for messages of type T. The returned Topic is ready
@@ -190,10 +193,10 @@ func (r *Receiver[T]) Unsubscribe() {
 // returns [os.ErrClosed]. If the topic's context is canceled, it returns the context's
 // error.
 func (r *Receiver[T]) Receive() (T, error) {
-	return r.doReceive(context.Background())
+	return r.doReceive(context.Background(), true /* failOnReceiveCh */)
 }
 
-func (r *Receiver[T]) doReceive(ctx context.Context) (T, error) {
+func (r *Receiver[T]) doReceive(ctx context.Context, failOnReceiveCh bool) (T, error) {
 	var zero T
 
 	r.mu.Lock()
@@ -204,14 +207,21 @@ func (r *Receiver[T]) doReceive(ctx context.Context) (T, error) {
 			return zero, os.ErrClosed
 		}
 
+		if r.topic.isClosed() {
+			return zero, context.Cause(r.topic.lifeCtx)
+		}
+
+		// Returns invalid when receiveCh is active.
+		if failOnReceiveCh {
+			if r.receiveCh != nil {
+				return zero, os.ErrInvalid
+			}
+		}
+
 		if len(r.queue) > 0 {
 			v := r.queue[0]
 			r.queue = slices.Delete(r.queue, 0, 1)
 			return v, nil
-		}
-
-		if r.topic.isClosed() {
-			return zero, context.Cause(r.topic.lifeCtx)
 		}
 
 		r.cond.Wait()
@@ -278,7 +288,7 @@ func (r *Receiver[T]) All(ctx context.Context, errp *error) iter.Seq[T] {
 		defer stopf()
 
 		for {
-			v, err := r.doReceive(ctx)
+			v, err := r.doReceive(ctx, true /* failOnReceiveCh */)
 			if err != nil {
 				if !errors.Is(err, os.ErrClosed) {
 					*errp = err
