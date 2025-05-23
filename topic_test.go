@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestTopic(t *testing.T) {
@@ -184,5 +185,43 @@ func TestIncludeRecent(t *testing.T) {
 		t.Fatal(err)
 	} else if v != 4 {
 		t.Fatalf("want %d, got %d", 4, v)
+	}
+}
+
+func TestReceiveClose(t *testing.T) {
+	topic := New[int]()
+	defer topic.Close()
+
+	sub, err := topic.Subscribe(0, false /* includeLast */)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		topic.Close()
+	}()
+
+	if _, err := sub.Receive(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("wanted os.ErrClosed, got %v", err)
+	}
+}
+
+func TestReceiveUnsubscribe(t *testing.T) {
+	topic := New[int]()
+	defer topic.Close()
+
+	sub, err := topic.Subscribe(0, false /* includeLast */)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		sub.Unsubscribe()
+	}()
+
+	if _, err := sub.Receive(); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("wanted os.ErrClosed, got %v", err)
 	}
 }
