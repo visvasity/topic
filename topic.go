@@ -18,7 +18,6 @@ import (
 	"os"
 	"slices"
 	"sync"
-	"sync/atomic"
 )
 
 // Topic represents a publish-subscribe channel that duplicates messages to all
@@ -53,6 +52,11 @@ type Topic[T any] struct {
 // Receiver represents a subscriber to a Topic. It provides methods to manage
 // subscription lifecycle, such as unsubscribing, and to receive messages.
 type Receiver[T any] struct {
+	// lifeCtx and lifeCancel manage topic lifecycle and cancellation.
+	lifeCtx    context.Context
+	lifeCancel context.CancelCauseFunc
+
+	// topic holds reference to the topic.
 	topic *Topic[T]
 
 	// mu synchronizes access to queue and closed state.
@@ -67,9 +71,6 @@ type Receiver[T any] struct {
 	// limit indicates maximum number of messages to buffer in the queue.
 	// 0: unbounded; +N: newest N values; -N: oldest |N| values.
 	limit int
-
-	// closed indicates whether the receiver is unsubscribed or topic is closed.
-	closed atomic.Bool
 
 	// receiveCh when non-nil indicates retrieves values ONLY over this channel.
 	receiveCh chan T
@@ -155,9 +156,12 @@ func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], error
 		return nil, context.Cause(t.lifeCtx)
 	}
 
+	ctx, cancel := context.WithCancelCause(context.Background())
 	r := &Receiver[T]{
-		topic: t,
-		limit: limit,
+		lifeCtx:    ctx,
+		lifeCancel: cancel,
+		topic:      t,
+		limit:      limit,
 	}
 	r.cond.L = &r.mu
 
@@ -166,6 +170,11 @@ func (t *Topic[T]) Subscribe(limit int, includeRecent bool) (*Receiver[T], error
 		r.add(t.recentValue)
 	}
 	return r, nil
+}
+
+// isClosed returns true if receiver is closed or unsubscribed.
+func (r *Receiver[T]) isClosed() bool {
+	return r.lifeCtx.Err() != nil
 }
 
 // Unsubscribe removes the receiver from the Topic, discarding pending messages.
@@ -180,11 +189,13 @@ func (r *Receiver[T]) Unsubscribe() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !r.closed.CompareAndSwap(false, true) {
+	if r.isClosed() {
 		return
 	}
 
+	r.lifeCancel(os.ErrClosed)
 	r.queue = nil
+
 	r.cond.Broadcast()
 }
 
@@ -203,7 +214,7 @@ func (r *Receiver[T]) doReceive(ctx context.Context, failOnReceiveCh bool) (T, e
 	defer r.mu.Unlock()
 
 	for ctx.Err() == nil {
-		if r.closed.Load() {
+		if r.isClosed() {
 			return zero, os.ErrClosed
 		}
 
@@ -235,7 +246,7 @@ func (r *Receiver[T]) add(v T) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.closed.Load() {
+	if r.isClosed() {
 		return
 	}
 
@@ -268,11 +279,13 @@ func (r *Receiver[T]) close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if !r.closed.CompareAndSwap(false, true) {
+	if r.isClosed() {
 		return
 	}
 
+	r.lifeCancel(os.ErrClosed)
 	r.queue = nil
+
 	r.cond.Broadcast()
 }
 
