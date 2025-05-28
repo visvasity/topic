@@ -11,7 +11,7 @@ func Benchmark1Send1Receive(b *testing.B) {
 	topic := New[int64]()
 	defer topic.Close()
 
-	receiver, err := topic.Subscribe(0, true /* includeRecent */)
+	receiver, err := Subscribe(topic, 0, true /* includeRecent */)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func Benchmark1Send1ReceiveCh(b *testing.B) {
 	topic := New[int64]()
 	defer topic.Close()
 
-	receiver, err := topic.Subscribe(0, true /* includeRecent */)
+	receiver, err := Subscribe(topic, 0, true /* includeRecent */)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func Benchmark1Send10Receives(b *testing.B) {
 	nreceivers := 10
 	var receivers []*Receiver[int64]
 	for i := 0; i < nreceivers; i++ {
-		r, err := topic.Subscribe(0, true /* includeRecent */)
+		r, err := Subscribe(topic, 0, true /* includeRecent */)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -85,7 +85,7 @@ func Benchmark1Send10ReceiveCh(b *testing.B) {
 	nreceivers := 10
 	var receivers []*Receiver[int64]
 	for i := 0; i < nreceivers; i++ {
-		r, err := topic.Subscribe(0, true /* includeRecent */)
+		r, err := Subscribe(topic, 0, true /* includeRecent */)
 		if err != nil {
 			b.Fatal(err)
 		}

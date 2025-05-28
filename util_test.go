@@ -36,7 +36,7 @@ func TestReceiveCh(t *testing.T) {
 	topic := New[int]()
 	defer topic.Close()
 
-	sub, err := topic.Subscribe(0, false /* includeRecent */)
+	sub, err := Subscribe(topic, 0, false /* includeRecent */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestReceiveChClose(t *testing.T) {
 	topic := New[int]()
 	defer topic.Close()
 
-	sub, err := topic.Subscribe(0, false /* includeRecent */)
+	sub, err := Subscribe(topic, 0, false /* includeRecent */)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestReceiveChUnsubscribe(t *testing.T) {
 	topic := New[int]()
 	defer topic.Close()
 
-	sub, err := topic.Subscribe(0, false /* includeRecent */)
+	sub, err := Subscribe(topic, 0, false /* includeRecent */)
 	if err != nil {
 		t.Fatal(err)
 	}

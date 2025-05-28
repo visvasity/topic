@@ -164,7 +164,7 @@ func (t *Topic[T]) Send(v T) error {
 //   - limit < 0: Buffers the oldest limit messages, discarding newer ones.
 //
 // If the Topic is closed or its context is canceled, Subscribe returns an error.
-func (t *Topic[T]) Subscribe(limit int, includeLast bool) (*Receiver[T], error) {
+func Subscribe[T any](t *Topic[T], limit int, includeLast bool) (*Receiver[T], error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

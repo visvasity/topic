@@ -24,7 +24,7 @@ func TestStress(t *testing.T) {
 
 	wg.Add(numReceivers)
 	for i := 0; i < numReceivers; i++ {
-		receiver, err := topic.Subscribe(0, true /* includeRecent */)
+		receiver, err := Subscribe(topic, 0, true /* includeRecent */)
 		if err != nil {
 			t.Fatal(err)
 		}
