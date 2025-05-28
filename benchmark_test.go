@@ -15,7 +15,7 @@ func Benchmark1Send1Receive(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer receiver.Unsubscribe()
+	defer receiver.Close()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -35,7 +35,7 @@ func Benchmark1Send1ReceiveCh(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer receiver.Unsubscribe()
+	defer receiver.Close()
 
 	rch, err := ReceiveCh(receiver)
 	if err != nil {
@@ -61,7 +61,7 @@ func Benchmark1Send10Receives(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		defer r.Unsubscribe()
+		defer r.Close()
 
 		receivers = append(receivers, r)
 	}
@@ -89,7 +89,7 @@ func Benchmark1Send10ReceiveCh(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		defer r.Unsubscribe()
+		defer r.Close()
 
 		receivers = append(receivers, r)
 	}

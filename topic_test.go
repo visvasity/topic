@@ -42,7 +42,7 @@ func TestTopic(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			receiver.Unsubscribe()
+			receiver.Close()
 		}()
 	}
 
@@ -93,7 +93,7 @@ func TestQueueLimitRecent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Unsubscribe()
+	defer sub.Close()
 
 	numMsgs := 5
 	for i := 1; i <= numMsgs; i++ {
@@ -106,7 +106,7 @@ func TestQueueLimitRecent(t *testing.T) {
 		t.Fatalf("want %d, got %d", numMsgs, v)
 	}
 
-	sub.Unsubscribe()
+	sub.Close()
 
 	if _, err := sub.Receive(); err == nil {
 		t.Fatalf("want non-nil error, got nil")
@@ -126,7 +126,7 @@ func TestQueueLimitOldest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Unsubscribe()
+	defer sub.Close()
 
 	numMsgs := 5
 	for i := 1; i <= numMsgs; i++ {
@@ -139,7 +139,7 @@ func TestQueueLimitOldest(t *testing.T) {
 		t.Fatalf("want %d, got %d", 1, v)
 	}
 
-	sub.Unsubscribe()
+	sub.Close()
 
 	if _, err := sub.Receive(); err == nil {
 		t.Fatalf("want non-nil error, got nil")
@@ -159,7 +159,7 @@ func TestIncludeRecent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub1.Unsubscribe()
+	defer sub1.Close()
 
 	for i := 0; i < 5; i++ {
 		sch <- i
@@ -169,7 +169,7 @@ func TestIncludeRecent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub2.Unsubscribe()
+	defer sub2.Close()
 
 	for i := 5; i < 10; i++ {
 		sch <- i
@@ -218,7 +218,7 @@ func TestReceiveUnsubscribe(t *testing.T) {
 
 	go func() {
 		time.Sleep(5 * time.Millisecond)
-		sub.Unsubscribe()
+		sub.Close()
 	}()
 
 	if _, err := sub.Receive(); !errors.Is(err, os.ErrClosed) {

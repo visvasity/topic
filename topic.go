@@ -77,11 +77,15 @@ func (t *Topic[T]) Close() error {
 	}
 
 	t.lifeCancel(os.ErrClosed)
-	for _, r := range t.receivers {
-		r.close()
-	}
-
+	receivers := t.receivers
 	t.receivers = nil
+
+	t.mu.Unlock()
+	defer t.mu.Lock()
+
+	for _, r := range receivers {
+		r.Close()
+	}
 	return nil
 }
 

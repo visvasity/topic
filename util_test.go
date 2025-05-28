@@ -40,7 +40,7 @@ func TestReceiveCh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Unsubscribe()
+	defer sub.Close()
 
 	if err := topic.Send(1); err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestReceiveChClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Unsubscribe()
+	defer sub.Close()
 
 	rch, err := ReceiveCh(sub)
 	if err != nil {
@@ -102,7 +102,7 @@ func TestReceiveChUnsubscribe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Unsubscribe()
+	defer sub.Close()
 
 	rch, err := ReceiveCh(sub)
 	if err != nil {
@@ -116,7 +116,7 @@ func TestReceiveChUnsubscribe(t *testing.T) {
 	}
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		sub.Unsubscribe()
+		sub.Close()
 	}()
 
 	// rch must breakout after topic is closed.

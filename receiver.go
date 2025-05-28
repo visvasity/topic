@@ -70,14 +70,9 @@ func Subscribe[T any](t *Topic[T], limit int, includeLast bool) (*Receiver[T], e
 	return r, nil
 }
 
-// isClosed returns true if receiver is closed or unsubscribed.
-func (r *Receiver[T]) isClosed() bool {
-	return r.lifeCtx.Err() != nil
-}
-
-// Unsubscribe removes the receiver from the Topic, discarding pending messages.
+// Close removes the receiver from the Topic, discarding pending messages.
 // Unsubscribe is idempotent. After unsubscribing, the receiver cannot be reused.
-func (r *Receiver[T]) Unsubscribe() {
+func (r *Receiver[T]) Close() {
 	r.topic.mu.Lock()
 	if i := slices.Index(r.topic.receivers, r); i >= 0 {
 		r.topic.receivers = slices.Delete(r.topic.receivers, i, i+1)
@@ -95,6 +90,11 @@ func (r *Receiver[T]) Unsubscribe() {
 	r.queue = nil
 
 	r.cond.Broadcast()
+}
+
+// isClosed returns true if receiver is closed or unsubscribed.
+func (r *Receiver[T]) isClosed() bool {
+	return r.lifeCtx.Err() != nil
 }
 
 // Receive returns the next available message from the receiver's queue, blocking
@@ -163,21 +163,6 @@ func (r *Receiver[T]) add(v T) {
 			return
 		}
 	}
-}
-
-// close marks the receiver as closed and clears its queue.
-func (r *Receiver[T]) close() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.isClosed() {
-		return
-	}
-
-	r.lifeCancel(os.ErrClosed)
-	r.queue = nil
-
-	r.cond.Broadcast()
 }
 
 // All returns an iterator to process all incoming values over the

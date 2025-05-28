@@ -35,7 +35,7 @@ func TestStress(t *testing.T) {
 				_ = v
 				n++
 			}
-			receiver.Unsubscribe()
+			receiver.Close()
 			log.Printf("%d: received %d messages", id, n)
 			wg.Done()
 		}(i)
