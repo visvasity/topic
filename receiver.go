@@ -11,6 +11,12 @@ import (
 	"sync"
 )
 
+type anyTopic interface {
+	isClosed() error
+	goRun(func(context.Context))
+	removeUnlocked(any) bool
+}
+
 // Receiver represents a subscriber to a Topic. It provides methods to manage
 // subscription lifecycle, such as unsubscribing, and to receive messages.
 type Receiver[T any] struct {
@@ -19,7 +25,7 @@ type Receiver[T any] struct {
 	lifeCancel context.CancelCauseFunc
 
 	// topic holds reference to the topic.
-	topic *Topic[T]
+	topic anyTopic
 
 	// mu synchronizes access to queue and closed state.
 	mu sync.Mutex
@@ -50,8 +56,8 @@ func Subscribe[T any](t *Topic[T], limit int, includeLast bool) (*Receiver[T], e
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.isClosed() {
-		return nil, context.Cause(t.lifeCtx)
+	if err := t.isClosed(); err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -73,16 +79,12 @@ func Subscribe[T any](t *Topic[T], limit int, includeLast bool) (*Receiver[T], e
 // Close removes the receiver from the Topic, discarding pending messages.
 // Unsubscribe is idempotent. After unsubscribing, the receiver cannot be reused.
 func (r *Receiver[T]) Close() {
-	r.topic.mu.Lock()
-	if i := slices.Index(r.topic.receivers, r); i >= 0 {
-		r.topic.receivers = slices.Delete(r.topic.receivers, i, i+1)
-	}
-	r.topic.mu.Unlock()
+	r.topic.removeUnlocked(r)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.isClosed() {
+	if err := r.isClosed(); err != nil {
 		return
 	}
 
@@ -92,9 +94,9 @@ func (r *Receiver[T]) Close() {
 	r.cond.Broadcast()
 }
 
-// isClosed returns true if receiver is closed or unsubscribed.
-func (r *Receiver[T]) isClosed() bool {
-	return r.lifeCtx.Err() != nil
+// isClosed returns non-nil error if receiver is closed or unsubscribed.
+func (r *Receiver[T]) isClosed() error {
+	return context.Cause(r.lifeCtx)
 }
 
 // Receive returns the next available message from the receiver's queue, blocking
@@ -112,12 +114,12 @@ func (r *Receiver[T]) doReceive(ctx context.Context) (T, error) {
 	defer r.mu.Unlock()
 
 	for ctx.Err() == nil {
-		if r.isClosed() {
-			return zero, os.ErrClosed
+		if err := r.isClosed(); err != nil {
+			return zero, err
 		}
 
-		if r.topic.isClosed() {
-			return zero, context.Cause(r.topic.lifeCtx)
+		if err := r.topic.isClosed(); err != nil {
+			return zero, err
 		}
 
 		if len(r.queue) > 0 {
@@ -137,7 +139,7 @@ func (r *Receiver[T]) add(v T) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.isClosed() {
+	if err := r.isClosed(); err != nil {
 		return
 	}
 

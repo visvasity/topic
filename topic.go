@@ -14,8 +14,15 @@ package topic
 import (
 	"context"
 	"os"
+	"reflect"
+	"slices"
 	"sync"
 )
+
+type anyReceiver[T any] interface {
+	Close()
+	add(T)
+}
 
 // Topic represents a publish-subscribe channel that duplicates messages to all
 // subscribed receivers. Messages are queued in-memory for slow receivers, and
@@ -33,7 +40,7 @@ type Topic[T any] struct {
 	mu sync.Mutex
 
 	// receivers is the list of all receivers for the topic.
-	receivers []*Receiver[T]
+	receivers []anyReceiver[T]
 
 	// recentValue holds the latest value sent to the topic.
 	recentValue T
@@ -72,8 +79,8 @@ func (t *Topic[T]) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.isClosed() {
-		return nil
+	if err := t.isClosed(); err != nil {
+		return err
 	}
 
 	t.lifeCancel(os.ErrClosed)
@@ -89,15 +96,42 @@ func (t *Topic[T]) Close() error {
 	return nil
 }
 
-// isClosed returns true if topic is closed.
-func (t *Topic[T]) isClosed() bool {
-	return t.lifeCtx.Err() != nil
+// isClosed returns non-nil error if topic is closed.
+func (t *Topic[T]) isClosed() error {
+	return context.Cause(t.lifeCtx)
+}
+
+// removeUnlocked removes input receiver by it's reflect.Value. Returns false
+// if receiver is not found.
+func (t *Topic[T]) removeUnlocked(r any) bool {
+	rvalue := reflect.ValueOf(r)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	index := slices.IndexFunc(t.receivers, func(v anyReceiver[T]) bool {
+		return reflect.ValueOf(v) == rvalue
+	})
+	if index == -1 {
+		return false
+	}
+
+	t.receivers = slices.Delete(t.receivers, index, index+1)
+	return true
+}
+
+func (t *Topic[T]) goRun(f func(context.Context)) {
+	t.wg.Add(1)
+	go func() {
+		f(t.lifeCtx)
+		t.wg.Done()
+	}()
 }
 
 // Last returns the most recent message sent over the Topic.  Returns false if
 // no messages are ever sent over the topic.
 func (t *Topic[T]) Last() (v T, ok bool) {
-	if t.isClosed() {
+	if err := t.isClosed(); err != nil {
 		return v, false
 	}
 
@@ -117,8 +151,8 @@ func (t *Topic[T]) Send(v T) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.isClosed() {
-		return context.Cause(t.lifeCtx)
+	if err := t.isClosed(); err != nil {
+		return err
 	}
 
 	for _, r := range t.receivers {

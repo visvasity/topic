@@ -2,10 +2,7 @@
 
 package topic
 
-import (
-	"context"
-	"os"
-)
+import "context"
 
 // SendCh returns a select-friendly channel to send messages over to a
 // topic. This is an alternative to the Send method, where a channel is more
@@ -20,8 +17,8 @@ func SendCh[T any](t *Topic[T]) (chan<- T, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.isClosed() {
-		return nil, context.Cause(t.lifeCtx)
+	if err := t.isClosed(); err != nil {
+		return nil, err
 	}
 
 	if t.sendCh == nil {
@@ -61,31 +58,34 @@ func ReceiveCh[T any](r *Receiver[T]) (<-chan T, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.isClosed() || r.topic.isClosed() {
-		return nil, os.ErrClosed
+	if err := r.isClosed(); err != nil {
+		return nil, err
+	}
+	if err := r.topic.isClosed(); err != nil {
+		return nil, err
 	}
 
 	if r.receiveCh == nil {
 		r.receiveCh = make(chan T)
 
-		r.topic.wg.Add(1)
-		go func() {
-			defer r.topic.wg.Done()
+		r.topic.goRun(func(ctx context.Context) {
 			defer close(r.receiveCh)
 
-			for !r.isClosed() {
+			for err := r.isClosed(); err == nil; err = r.isClosed() {
 				v, err := r.doReceive(r.lifeCtx)
 				if err != nil {
 					return
 				}
 
 				select {
+				case <-ctx.Done():
+					return
 				case <-r.lifeCtx.Done():
 					return
 				case r.receiveCh <- v:
 				}
 			}
-		}()
+		})
 	}
 
 	return r.receiveCh, nil
